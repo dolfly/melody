@@ -2,6 +2,7 @@ package melody
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -297,4 +298,74 @@ func (m *Melody) IsClosed() bool {
 // FormatCloseMessage formats closeCode and text as a WebSocket close message.
 func FormatCloseMessage(closeCode int, text string) []byte {
 	return websocket.FormatCloseMessage(closeCode, text)
+}
+
+// BroadcastWithDeadline broadcasts a text message with a custom write deadline.
+// If deadline is 0, uses Config.WriteWait.
+func (m *Melody) BroadcastWithDeadline(msg []byte, deadline time.Duration) error {
+	if m.hub.closed() {
+		return ErrClosed
+	}
+
+	message := envelope{
+		t:         websocket.TextMessage,
+		msg:       msg,
+		writeWait: deadline,
+	}
+	m.hub.broadcast(message)
+
+	return nil
+}
+
+// BroadcastFilterWithDeadline broadcasts a text message to filtered sessions with a custom write deadline.
+// If deadline is 0, uses Config.WriteWait.
+func (m *Melody) BroadcastFilterWithDeadline(msg []byte, deadline time.Duration, fn func(*Session) bool) error {
+	if m.hub.closed() {
+		return ErrClosed
+	}
+
+	message := envelope{
+		t:         websocket.TextMessage,
+		msg:       msg,
+		filter:    fn,
+		writeWait: deadline,
+	}
+	m.hub.broadcast(message)
+
+	return nil
+}
+
+// BroadcastBinaryWithDeadline broadcasts a binary message with a custom write deadline.
+// If deadline is 0, uses Config.WriteWait.
+func (m *Melody) BroadcastBinaryWithDeadline(msg []byte, deadline time.Duration) error {
+	if m.hub.closed() {
+		return ErrClosed
+	}
+
+	message := envelope{
+		t:         websocket.BinaryMessage,
+		msg:       msg,
+		writeWait: deadline,
+	}
+	m.hub.broadcast(message)
+
+	return nil
+}
+
+// BroadcastBinaryFilterWithDeadline broadcasts a binary message to filtered sessions with a custom write deadline.
+// If deadline is 0, uses Config.WriteWait.
+func (m *Melody) BroadcastBinaryFilterWithDeadline(msg []byte, deadline time.Duration, fn func(*Session) bool) error {
+	if m.hub.closed() {
+		return ErrClosed
+	}
+
+	message := envelope{
+		t:         websocket.BinaryMessage,
+		msg:       msg,
+		filter:    fn,
+		writeWait: deadline,
+	}
+	m.hub.broadcast(message)
+
+	return nil
 }

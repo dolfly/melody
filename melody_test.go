@@ -847,3 +847,98 @@ func TestConcurrentMessageHandling(t *testing.T) {
 		}
 	})
 }
+
+func TestPerMessageDeadline(t *testing.T) {
+	done := make(chan bool)
+
+	ws := NewTestServer()
+	ws.m.Config.WriteWait = 5 * time.Second
+
+	ws.m.HandleConnect(func(s *Session) {
+		// New API with custom deadline
+		err := s.WriteWithDeadline([]byte("test"), 30*time.Second)
+		assert.Nil(t, err)
+		close(done)
+	})
+
+	server := httptest.NewServer(ws)
+	defer server.Close()
+
+	conn := MustNewDialer(server.URL)
+	defer conn.Close()
+
+	_, msg, err := conn.ReadMessage()
+	assert.Nil(t, err)
+	assert.Equal(t, "test", string(msg))
+
+	<-done
+}
+
+func TestZeroDeadlineUsesConfig(t *testing.T) {
+	done := make(chan bool)
+
+	ws := NewTestServer()
+	ws.m.Config.WriteWait = 5 * time.Second
+
+	ws.m.HandleConnect(func(s *Session) {
+		// Explicitly pass 0, should use Config.WriteWait
+		err := s.WriteWithDeadline([]byte("test"), 0)
+		assert.Nil(t, err)
+		close(done)
+	})
+
+	server := httptest.NewServer(ws)
+	defer server.Close()
+
+	conn := MustNewDialer(server.URL)
+	defer conn.Close()
+
+	_, msg, err := conn.ReadMessage()
+	assert.Nil(t, err)
+	assert.Equal(t, "test", string(msg))
+
+	<-done
+}
+
+func TestSizeBasedDeadline(t *testing.T) {
+	received := make(chan bool, 2)
+
+	ws := NewTestServer()
+	ws.m.Config.WriteWait = 10 * time.Second
+
+	server := httptest.NewServer(ws)
+	defer server.Close()
+
+	conn := MustNewDialer(server.URL)
+	defer conn.Close()
+
+	// Small message - short deadline
+	smallMsg := []byte("ping")
+	deadline := 2 * time.Second
+	err := ws.m.BroadcastWithDeadline(smallMsg, deadline)
+	assert.Nil(t, err)
+
+	// Large message - long deadline
+	largeMsg := make([]byte, 8192)
+	for i := range largeMsg {
+		largeMsg[i] = 'x'
+	}
+	longDeadline := 30 * time.Second
+	err = ws.m.BroadcastWithDeadline(largeMsg, longDeadline)
+	assert.Nil(t, err)
+
+	// Read first message
+	_, msg1, err := conn.ReadMessage()
+	assert.Nil(t, err)
+	assert.Equal(t, smallMsg, msg1)
+	received <- true
+
+	// Read second message
+	_, msg2, err := conn.ReadMessage()
+	assert.Nil(t, err)
+	assert.Equal(t, largeMsg, msg2)
+	received <- true
+
+	<-received
+	<-received
+}
