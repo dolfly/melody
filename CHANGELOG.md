@@ -1,3 +1,7 @@
+## 2025-10-28 (v1.4.0)
+
+* Support per-message write deadlines by @troutowicz (PR-100)
+
 ## 2025-06-08 (v1.3.0)
 
 * Refactor and simplify hub by @TheSven73 (PR-98).
