@@ -540,6 +540,10 @@ func TestErrClosed(t *testing.T) {
 	assert.ErrorIs(t, ws.m.BroadcastBinary(TestMsg), ErrClosed)
 	assert.ErrorIs(t, ws.m.BroadcastFilter(TestMsg, func(s *Session) bool { return true }), ErrClosed)
 	assert.ErrorIs(t, ws.m.BroadcastBinaryFilter(TestMsg, func(s *Session) bool { return true }), ErrClosed)
+	assert.ErrorIs(t, ws.m.BroadcastWithDeadline(TestMsg, time.Second), ErrClosed)
+	assert.ErrorIs(t, ws.m.BroadcastBinaryWithDeadline(TestMsg, time.Second), ErrClosed)
+	assert.ErrorIs(t, ws.m.BroadcastFilterWithDeadline(TestMsg, time.Second, func(s *Session) bool { return true }), ErrClosed)
+	assert.ErrorIs(t, ws.m.BroadcastBinaryFilterWithDeadline(TestMsg, time.Second, func(s *Session) bool { return true }), ErrClosed)
 	assert.ErrorIs(t, ws.m.HandleRequest(nil, nil), ErrClosed)
 }
 
@@ -572,6 +576,8 @@ func TestErrSessionClosed(t *testing.T) {
 	assert.ErrorIs(t, s.CloseWithMsg(TestMsg), ErrSessionClosed)
 	assert.ErrorIs(t, s.Close(), ErrSessionClosed)
 	assert.ErrorIs(t, ws.m.BroadcastMultiple(TestMsg, []*Session{s}), ErrSessionClosed)
+	assert.ErrorIs(t, s.WriteWithDeadline(TestMsg, time.Second), ErrSessionClosed)
+	assert.ErrorIs(t, s.WriteBinaryWithDeadline(TestMsg, time.Second), ErrSessionClosed)
 
 	assert.ErrorIs(t, s.writeRaw(envelope{}), ErrWriteClosed)
 	s.writeMessage(envelope{})
@@ -900,6 +906,51 @@ func TestZeroDeadlineUsesConfig(t *testing.T) {
 	<-done
 }
 
+func TestWriteBinaryWithDeadline(t *testing.T) {
+	done := make(chan bool)
+
+	ws := NewTestServer()
+	ws.m.Config.WriteWait = 5 * time.Second
+
+	ws.m.HandleConnect(func(s *Session) {
+		// New API with custom deadline (binary)
+		err := s.WriteBinaryWithDeadline([]byte("bin"), 30*time.Second)
+		assert.Nil(t, err)
+		close(done)
+	})
+
+	server := httptest.NewServer(ws)
+	defer server.Close()
+
+	conn := MustNewDialer(server.URL)
+	defer conn.Close()
+
+	_, msg, err := conn.ReadMessage()
+	assert.Nil(t, err)
+	assert.Equal(t, "bin", string(msg))
+
+	<-done
+}
+
+func TestBroadcastBinaryWithDeadline(t *testing.T) {
+	ws := NewTestServer()
+	ws.m.Config.WriteWait = 5 * time.Second
+
+	server := httptest.NewServer(ws)
+	defer server.Close()
+
+	conn := MustNewDialer(server.URL)
+	defer conn.Close()
+
+	msg := []byte("bcast-bin")
+	err := ws.m.BroadcastBinaryWithDeadline(msg, 2*time.Second)
+	assert.Nil(t, err)
+
+	_, got, err := conn.ReadMessage()
+	assert.Nil(t, err)
+	assert.True(t, bytes.Equal(msg, got))
+}
+
 func TestSizeBasedDeadline(t *testing.T) {
 	received := make(chan bool, 2)
 
@@ -941,4 +992,94 @@ func TestSizeBasedDeadline(t *testing.T) {
 
 	<-received
 	<-received
+}
+
+func TestBroadcastFilterWithDeadline(t *testing.T) {
+	ws := NewTestServer()
+
+	// Tag sessions based on query param so filter can target a specific one
+	ws.m.HandleConnect(func(s *Session) {
+		id := s.Request.URL.Query().Get("id")
+		if id == "1" {
+			s.Set("target", true)
+		} else {
+			s.Set("target", false)
+		}
+	})
+
+	server := httptest.NewServer(ws)
+	defer server.Close()
+
+	connTarget := MustNewDialer(server.URL + "?id=1")
+	defer connTarget.Close()
+	connOther := MustNewDialer(server.URL + "?id=2")
+	defer connOther.Close()
+
+	msg := []byte("filter-text")
+	err := ws.m.BroadcastFilterWithDeadline(msg, 2*time.Second, func(s *Session) bool {
+		v, _ := s.Get("target")
+		b, _ := v.(bool)
+		return b
+	})
+	assert.Nil(t, err)
+
+	// Target should receive
+	_, got, err := connTarget.ReadMessage()
+	assert.Nil(t, err)
+	assert.True(t, bytes.Equal(msg, got))
+
+	// Other should timeout (no message delivered)
+	connOther.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	_, _, err = connOther.ReadMessage()
+	if err == nil {
+		t.Fatalf("expected timeout on non-matching connection, got no error")
+	}
+	if !os.IsTimeout(err) {
+		t.Fatalf("expected timeout error, got %v", err)
+	}
+}
+
+func TestBroadcastBinaryFilterWithDeadline(t *testing.T) {
+	ws := NewTestServer()
+
+	// Tag sessions based on query param so filter can target a specific one
+	ws.m.HandleConnect(func(s *Session) {
+		id := s.Request.URL.Query().Get("id")
+		if id == "1" {
+			s.Set("target", true)
+		} else {
+			s.Set("target", false)
+		}
+	})
+
+	server := httptest.NewServer(ws)
+	defer server.Close()
+
+	connTarget := MustNewDialer(server.URL + "?id=1")
+	defer connTarget.Close()
+	connOther := MustNewDialer(server.URL + "?id=2")
+	defer connOther.Close()
+
+	msg := []byte("filter-bin")
+	err := ws.m.BroadcastBinaryFilterWithDeadline(msg, 2*time.Second, func(s *Session) bool {
+		v, _ := s.Get("target")
+		b, _ := v.(bool)
+		return b
+	})
+	assert.Nil(t, err)
+
+	// Target should receive
+	_, got, err := connTarget.ReadMessage()
+	assert.Nil(t, err)
+	assert.True(t, bytes.Equal(msg, got))
+
+	// Other should timeout (no message delivered)
+	connOther.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	_, _, err = connOther.ReadMessage()
+	if err == nil {
+		t.Fatalf("expected timeout on non-matching connection, got no error")
+	}
+	if !os.IsTimeout(err) {
+		t.Fatalf("expected timeout error, got %v", err)
+	}
 }
